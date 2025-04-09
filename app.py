@@ -1,42 +1,78 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pandas as pd
-import os
-from thefuzz import process 
+from vector_store import get_response_from_pdf
+from src.chatbot import text_to_speech, speech_to_text
 
 app = Flask(__name__)
 CORS(app)
 
-# Load dataset
-base_dir = os.path.dirname(os.path.abspath(__file__))
-file_path = os.path.join(base_dir, "data", "bbc-text.xlsx")
-
-df = pd.read_excel(file_path)
-df.rename(columns=lambda x: x.strip().lower(), inplace=True)  
+chat_history = []
 
 @app.route("/ask", methods=["POST"])
 def ask():
+    """Handle text-based queries."""
     try:
         data = request.get_json()
-        user_query = data.get("query", "").strip().lower()
+        user_query = data.get("query", "").strip()
 
         if not user_query:
             return jsonify({"error": "Query cannot be empty"}), 400
 
-        # Get best matching category
-        categories = df["category"].unique().tolist()
-        best_match, score = process.extractOne(user_query, categories)
+        response = get_response_from_pdf(user_query)
 
-        if score < 60:  # Adjust this threshold if needed
-            return jsonify({"response": "No relevant category found."})
+        chat_history.append({"query": user_query, "response": response})
 
-        # Get responses for the best matching category
-        matched_texts = df[df["category"].str.lower() == best_match]["text"].tolist()
-
-        return jsonify({"response": matched_texts})
+        return jsonify({
+            "response": response,
+            "history": chat_history
+        })
 
     except Exception as e:
-        print("Error:", str(e))
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ask-voice", methods=["GET"])
+def ask_voice():
+    """Handle voice queries."""
+    try:
+        user_query = speech_to_text()
+        response = get_response_from_pdf(user_query)
+        text_to_speech(response)
+
+        chat_history.append({"query": user_query, "response": response})
+
+        return jsonify({
+            "query": user_query,
+            "response": response,
+            "history": chat_history
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/get-chats", methods=["GET"])
+def get_chats():
+    """Get the current chat history."""
+    try:
+        return jsonify({
+            "history": chat_history
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/delete-chat", methods=["POST"])
+def delete_chat():
+    try:
+        data = request.get_json()
+        index = data.get("index")
+
+        if index is None or not (0 <= index < len(chat_history)):
+            return jsonify({"error": "Invalid index"}), 400
+
+        chat_history.pop(index)
+
+        return jsonify({"success": True})
+
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
